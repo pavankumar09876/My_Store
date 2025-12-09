@@ -25,9 +25,6 @@ pipeline {
         stage('Setup Python Virtual Environment') {
             steps {
                 sh '''
-                    sudo apt update
-                    sudo apt install -y python3.12-venv
-                    
                     python3 -m venv ${VENV_DIR}
                     . ${VENV_DIR}/bin/activate
                     pip install --upgrade pip
@@ -56,10 +53,18 @@ pipeline {
                 sh '''
                     . ${VENV_DIR}/bin/activate
                     pip install bandit
-                    bandit -r . --exclude ${VENV_DIR},migrations,__pycache__ -ll || true
+
+                    # Create reports directory if it doesn't exist
+                    mkdir -p reports
+
+                    # Run Bandit scan on your source code and third-party libraries
+                    bandit -r . --exclude ${VENV_DIR},migrations,__pycache__ -ll -f txt -o reports/bandit_vulnerabilities.txt || true
+
+                    echo "Bandit scan completed. Vulnerabilities report saved as reports/bandit_vulnerabilities.txt"
                 '''
             }
         }
+
 
         /* ---------------------------
            pip-audit SCA scan
@@ -82,7 +87,7 @@ pipeline {
                 withCredentials([string(credentialsId: 'sonar-token', variable: 'SONAR_TOKEN')]) {
                     sh '''
                         ${SCANNER_HOME}/bin/sonar-scanner \
-                            -Dsonar.projectKey=MyStore \
+                            -Dsonar.projectKey=My_Store \
                             -Dsonar.sources=. \
                             -Dsonar.host.url=http://18.142.113.58:9000 \
                             -Dsonar.login=$SONAR_TOKEN
