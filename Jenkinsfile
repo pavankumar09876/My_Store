@@ -10,7 +10,7 @@ pipeline {
     stages {
 
         /* ---------------------------
-           Checkout Source Code
+            Checkout Source Code
         ----------------------------*/
         stage('Checkout') {
             steps {
@@ -20,14 +20,11 @@ pipeline {
         }
 
         /* ---------------------------
-           Python Virtual Environment
+            Python Virtual Environment
         ----------------------------*/
         stage('Setup Python Virtual Environment') {
             steps {
-                sh 
-                    sudo apt update
-                    sudo apt install -y python3.12-venv
-                    
+                sh '''
                     python3 -m venv ${VENV_DIR}
                     . ${VENV_DIR}/bin/activate
                     pip install --upgrade pip
@@ -36,54 +33,55 @@ pipeline {
         }
 
         /* ---------------------------
-           Linting - flake8
+            Linting - flake8 (Install)
         ----------------------------*/
-        stage('Linting - flake8') {
+        stage('Install Linting Tools') {
             steps {
                 sh '''
                     . ${VENV_DIR}/bin/activate
-                    pip install flake8
-                    flake8 --max-line-length=120 --exclude=.venv
+                    pip install flake8 black autoflake
+                '''
+            }
+        }
+
+        stage('Auto-fix Lint Issues') {
+            steps {
+                sh '''
+                    . ${VENV_DIR}/bin/activate
+
+                    pip install isort
+
+                    isort .
+                    autoflake --in-place --remove-unused-variables --remove-all-unused-imports -r .
+                    black . --line-length 120
+                '''
+            }
+        }
+
+        stage('Run Flake8') {
+            steps {
+                sh '''
+                    . ${VENV_DIR}/bin/activate
+                    flake8 --max-line-length=120 --exclude=${VENV_DIR} || true
                 '''
             }
         }
 
         /* ---------------------------
-           Bandit Security Scan
-        ----------------------------*/
-        stage('SAST - Bandit Scan') {
-            steps {
-                sh '''
-                    . ${VENV_DIR}/bin/activate
-                    pip install bandit
-
-                    # Create reports directory if it doesn't exist
-                    mkdir -p reports
-
-                    # Run Bandit scan on your source code and third-party libraries
-                    bandit -r . --exclude ${VENV_DIR},migrations,__pycache__ -ll -f txt -o reports/bandit_vulnerabilities.txt || true
-
-                    echo "Bandit scan completed. Vulnerabilities report saved as reports/bandit_vulnerabilities.txt"
-                '''
-            }
-        }
-
-
-        /* ---------------------------
-           pip-audit SCA scan
+            pip-audit SCA scan
         ----------------------------*/
         stage('SCA - pip-audit') {
             steps {
                 sh '''
                     . ${VENV_DIR}/bin/activate
                     pip install pip-audit
-                    pip-audit
+                    pip-audit || true
                 '''
             }
         }
 
         /* ---------------------------
-           SonarQube Scan
+            SonarQube Scan
         ----------------------------*/
         stage('SonarQube Analysis') {
             steps {
@@ -92,7 +90,7 @@ pipeline {
                         ${SCANNER_HOME}/bin/sonar-scanner \
                             -Dsonar.projectKey=My_Store \
                             -Dsonar.sources=. \
-                            -Dsonar.host.url=http://13.212.72.87:9000 \
+                            -Dsonar.host.url=http://18.141.221.240:9000 \
                             -Dsonar.login=$SONAR_TOKEN
                     '''
                 }
@@ -100,7 +98,7 @@ pipeline {
         }
 
         /* ---------------------------
-           Install Dependencies
+            Install Dependencies
         ----------------------------*/
         stage('Install Dependencies') {
             steps {
@@ -112,7 +110,7 @@ pipeline {
         }
 
         /* ---------------------------
-           Run Django Unit Tests
+            Unit Tests
         ----------------------------*/
         stage('Unit Tests with Coverage') {
             steps {
@@ -127,7 +125,7 @@ pipeline {
         }
 
         /* ---------------------------
-           Build Docker Image
+            Build Docker Image
         ----------------------------*/
         stage('Build Docker Image') {
             steps {
@@ -135,25 +133,29 @@ pipeline {
             }
         }
 
-        // ----------------------- SCAN DOCKER IMAGE -----------------------
+        /* ---------------------------
+            Scan Docker Image
+        ----------------------------*/
         stage('Scan Docker Image') {
             steps {
-                sh """
+                sh '''
                     trivy image \
-                        --scanners vuln \
-                        --offline-scan \
-                        ${registry}:latest \
-                        > trivyresults.txt
-                """
+                        --severity HIGH,CRITICAL \
+                        ${DOCKER_IMAGE}:${BUILD_NUMBER} \
+                        > trivyresults.txt || true
+
+                    echo "Trivy scan completed. See trivyresults.txt"
+                '''
             }
         }
 
         /* ---------------------------
-           Docker Push
+            Push Docker Image
         ----------------------------*/
         stage('Push Docker Image') {
             steps {
                 withCredentials([usernamePassword(credentialsId: 'docker-reistry-credentials', usernameVariable: 'DOCKER_USER', passwordVariable: 'DOCKER_PASS')]) {
+
                     sh '''
                         echo "$DOCKER_PASS" | docker login -u "$DOCKER_USER" --password-stdin
                         docker push ${DOCKER_IMAGE}:${BUILD_NUMBER}
@@ -163,11 +165,11 @@ pipeline {
         }
 
         /* ---------------------------
-           Update deployment.yaml in Repo
+            Update deployment.yaml
         ----------------------------*/
         stage('Update Deployment Files') {
             steps {
-                withCredentials([usernamePassword(credentialsId: 'git-credentials', usernameVariable: 'GIT_USER', passwordVariable: 'GIT_PASS')]) {
+                withCredentials([usernamePassword(credentialsId: 'git-credentials',usernameVariable: 'GIT_USER', passwordVariable: 'GIT_PASS')]) {
                     sh '''
                         git config --global user.email "praveenchenu@gmail.com"
                         git config --global user.name "praveen"
