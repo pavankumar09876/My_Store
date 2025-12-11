@@ -1,106 +1,52 @@
 pipeline {
     agent any
 
+    parameters {
+        string(name: 'ECR_REPO_NAME', defaultValue: 'django-project', description: 'Enter ECR repository name')
+        string(name: 'AWS_ACCOUNT_ID', defaultValue: '123456789012', description: 'Enter AWS Account ID')
+    }
+
     environment {
-        DOCKER_IMAGE = "praveenkumar446/django-image"
-        SCANNER_HOME = tool 'SonarScanner'
-        VENV_DIR = ".venv"
+        SCANNER_HOME = tool 'SonarQube Scanner'     // Update this name
+        VENV_DIR = "${WORKSPACE}/venv"
     }
 
     stages {
 
-        /* ---------------------------
-            Checkout Source Code
-        ----------------------------*/
-        stage('Checkout') {
+        stage('1. Git Checkout') {
             steps {
-                echo "Cloning repository..."
                 git branch: 'master', url: 'https://github.com/Praveenchenu/My_Store.git'
             }
         }
 
-        /* ---------------------------
-            Python Virtual Environment
-        ----------------------------*/
-        stage('Setup Python Virtual Environment') {
+        stage('2. Setup Python Virtual Environment') {
             steps {
                 sh '''
                     python3 -m venv ${VENV_DIR}
                     . ${VENV_DIR}/bin/activate
-                    pip install --upgrade pip
+                    pip install --upgrade pip setuptools wheel
                 '''
             }
         }
 
-        /* ---------------------------
-            Linting - flake8 (Install)
-        ----------------------------*/
-        stage('Install Linting Tools') {
+        stage('3. SonarQube Analysis') {
             steps {
-                sh '''
-                    . ${VENV_DIR}/bin/activate
-                    pip install flake8 black autoflake
-                '''
-            }
-        }
-
-        stage('Auto-fix Lint Issues') {
-            steps {
-                sh '''
-                    . ${VENV_DIR}/bin/activate
-
-                    pip install isort
-
-                    isort .
-                    autoflake --in-place --remove-unused-variables --remove-all-unused-imports -r .
-                    black . --line-length 120
-                '''
-            }
-        }
-
-        stage('Run Flake8') {
-            steps {
-                sh '''
-                    . ${VENV_DIR}/bin/activate
-                    flake8 --max-line-length=120 --exclude=${VENV_DIR} || true
-                '''
-            }
-        }
-
-        /* ---------------------------
-            pip-audit SCA scan
-        ----------------------------*/
-        stage('SCA - pip-audit') {
-            steps {
-                sh '''
-                    . ${VENV_DIR}/bin/activate
-                    pip install pip-audit
-                    pip-audit || true
-                '''
-            }
-        }
-
-        /* ---------------------------
-            SonarQube Scan
-        ----------------------------*/
-        stage('SonarQube Analysis') {
-            steps {
-                withCredentials([string(credentialsId: 'sonar-token', variable: 'SONAR_TOKEN')]) {
-                    sh '''
-                        ${SCANNER_HOME}/bin/sonar-scanner \
-                            -Dsonar.projectKey=My_Store \
-                            -Dsonar.sources=. \
-                            -Dsonar.host.url=http://18.141.221.240:9000 \
-                            -Dsonar.login=$SONAR_TOKEN
-                    '''
+                withSonarQubeEnv('SonarQube Server') {   // Update this name
+                    withCredentials([string(credentialsId: 'sonar-token', variable: 'SONAR_TOKEN')]) {
+                        sh '''
+                            ${SCANNER_HOME}/bin/sonar-scanner \
+                                -Dsonar.projectKey=My_Store \
+                                -Dsonar.projectName=My_Store \
+                                -Dsonar.sources=. \
+                                -Dsonar.python.version=3 \
+                                -Dsonar.login=$SONAR_TOKEN
+                        '''
+                    }
                 }
             }
         }
 
-        /* ---------------------------
-            Install Dependencies
-        ----------------------------*/
-        stage('Install Dependencies') {
+        stage('4. Install Dependencies') {
             steps {
                 sh '''
                     . ${VENV_DIR}/bin/activate
@@ -109,10 +55,15 @@ pipeline {
             }
         }
 
-        /* ---------------------------
-            Unit Tests
-        ----------------------------*/
-        stage('Unit Tests with Coverage') {
+        stage('5. Quality Gate Check') {
+            steps {
+                timeout(time: 10, unit: 'MINUTES') {
+                    waitForQualityGate abortPipeline: false, credentialsId: 'sonar-token'
+                }
+            }
+        }
+
+        stage('6. Unit Tests with Coverage') {
             steps {
                 sh '''
                     . ${VENV_DIR}/bin/activate
@@ -124,73 +75,92 @@ pipeline {
             }
         }
 
-        /* ---------------------------
-            Build Docker Image
-        ----------------------------*/
-        stage('Build Docker Image') {
-            steps {
-                sh "docker build -t ${DOCKER_IMAGE}:${BUILD_NUMBER} ."
-            }
-        }
-
-        /* ---------------------------
-            Scan Docker Image
-        ----------------------------*/
-        stage('Scan Docker Image') {
+        stage('7. SAST - Bandit Scan') {
             steps {
                 sh '''
-                    trivy image \
-                        --severity HIGH,CRITICAL \
-                        ${DOCKER_IMAGE}:${BUILD_NUMBER} \
-                        > trivyresults.txt || true
+                    . ${VENV_DIR}/bin/activate
+                    pip install bandit
 
-                    echo "Trivy scan completed. See trivyresults.txt"
+                    mkdir -p ${WORKSPACE}/reports
+
+                    bandit -r . \
+                        --exclude ${VENV_DIR},migrations,__pycache__ \
+                        -ll -f txt \
+                        -o ${WORKSPACE}/reports/bandit_vulnerabilities.txt || true
+
+                    echo "Bandit scan completed."
                 '''
             }
         }
 
-        /* ---------------------------
-            Push Docker Image
-        ----------------------------*/
-        stage('Push Docker Image') {
+        stage('8. Trivy Scan') {
             steps {
-                withCredentials([usernamePassword(credentialsId: 'docker-reistry-credentials', usernameVariable: 'DOCKER_USER', passwordVariable: 'DOCKER_PASS')]) {
+                sh '''
+                    trivy fs . > trivy-report.txt || true
+                    echo "Trivy scan completed."
+                '''
+            }
+        }
 
+        stage('9. Build Docker Image') {
+            steps {
+                sh "docker build -t ${params.ECR_REPO_NAME} ."
+            }
+        }
+
+        stage('10. Create ECR Repo') {
+            steps {
+                withCredentials([
+                    string(credentialsId: 'access-key', variable: 'AWS_ACCESS_KEY'),
+                    string(credentialsId: 'secret-key', variable: 'AWS_SECRET_KEY')
+                ]) {
                     sh '''
-                        echo "$DOCKER_PASS" | docker login -u "$DOCKER_USER" --password-stdin
-                        docker push ${DOCKER_IMAGE}:${BUILD_NUMBER}
+                        aws configure set aws_access_key_id $AWS_ACCESS_KEY
+                        aws configure set aws_secret_access_key $AWS_SECRET_KEY
+
+                        aws ecr describe-repositories --repository-names ${ECR_REPO_NAME} --region us-east-1 || \
+                        aws ecr create-repository --repository-name ${ECR_REPO_NAME} --region us-east-1
                     '''
                 }
             }
         }
 
-        /* ---------------------------
-            Update deployment.yaml
-        ----------------------------*/
-        stage('Update Deployment Files') {
+        stage('11. Login & Tag Image') {
             steps {
-                withCredentials([usernamePassword(credentialsId: 'git-credentials',usernameVariable: 'GIT_USER', passwordVariable: 'GIT_PASS')]) {
+                withCredentials([
+                    string(credentialsId: 'access-key', variable: 'AWS_ACCESS_KEY'),
+                    string(credentialsId: 'secret-key', variable: 'AWS_SECRET_KEY')
+                ]) {
                     sh '''
-                        git config --global user.email "praveenchenu@gmail.com"
-                        git config --global user.name "praveen"
+                        aws ecr get-login-password --region us-east-1 | \
+                        docker login --username AWS --password-stdin ${params.AWS_ACCOUNT_ID}.dkr.ecr.us-east-1.amazonaws.com
 
-                        sed -i "s|image:.*|image: ${DOCKER_IMAGE}:${BUILD_NUMBER}|" deployment.yaml
-
-                        git add deployment.yaml
-                        git commit -m "Update image tag to ${BUILD_NUMBER}" || echo "No changes"
-                        git push https://${GIT_USER}:${GIT_PASS}@github.com/Praveenchenu/My_Store.git HEAD:master
+                        docker tag ${params.ECR_REPO_NAME} ${params.AWS_ACCOUNT_ID}.dkr.ecr.us-east-1.amazonaws.com/${params.ECR_REPO_NAME}:${BUILD_NUMBER}
+                        docker tag ${params.ECR_REPO_NAME} ${params.AWS_ACCOUNT_ID}.dkr.ecr.us-east-1.amazonaws.com/${params.ECR_REPO_NAME}:latest
                     '''
                 }
             }
         }
-    }
 
-    post {
-        success {
-            echo "Pipeline completed successfully!"
+        stage('12. Push Image') {
+            steps {
+                sh '''
+                    docker push ${params.AWS_ACCOUNT_ID}.dkr.ecr.us-east-1.amazonaws.com/${params.ECR_REPO_NAME}:${BUILD_NUMBER}
+                    docker push ${params.AWS_ACCOUNT_ID}.dkr.ecr.us-east-1.amazonaws.com/${params.ECR_REPO_NAME}:latest
+                '''
+            }
         }
-        failure {
-            echo "Pipeline failed! Check logs."
+
+        stage('13. Cleanup') {
+            steps {
+                sh '''
+                    docker rmi ${params.AWS_ACCOUNT_ID}.dkr.ecr.us-east-1.amazonaws.com/${params.ECR_REPO_NAME}:${BUILD_NUMBER} || true
+                    docker rmi ${params.AWS_ACCOUNT_ID}.dkr.ecr.us-east-1.amazonaws.com/${params.ECR_REPO_NAME}:latest || true
+                    docker rmi ${params.ECR_REPO_NAME} || true
+                    docker image prune -f
+                '''
+            }
         }
+
     }
 }
