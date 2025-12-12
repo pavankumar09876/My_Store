@@ -17,6 +17,7 @@ sudo systemctl start docker
 sudo systemctl enable docker
 sudo systemctl status docker
 sudo usermod -aG docker jenkins
+sudo chmod 666 /var/run/docker.sock
 sudo systemctl restart jenkins
 sudo systemctl restart docker
 
