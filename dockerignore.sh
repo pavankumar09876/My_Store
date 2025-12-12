@@ -1,0 +1,11 @@
+.venv
+venv
+__pycache__
+*.pyc
+.coverage
+coverage.xml
+reports/
+.trivy
+.git
+.gitignore
+*.log
