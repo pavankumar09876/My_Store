@@ -104,7 +104,9 @@ pipeline {
 
         stage('9. Build Docker Image') {
             steps {
-                sh "docker build -t ${params.ECR_REPO_NAME} ."
+                sh '''
+                    docker build -t ${ECR_REPO_NAME} .
+                '''
             }
         }
 
@@ -113,58 +115,58 @@ pipeline {
                 withCredentials([
                     string(credentialsId: 'access-key', variable: 'AWS_ACCESS_KEY'),
                     string(credentialsId: 'secret-key', variable: 'AWS_SECRET_KEY')
-                ]) {
-                    sh '''
-                        aws configure set aws_access_key_id $AWS_ACCESS_KEY
-                        aws configure set aws_secret_access_key $AWS_SECRET_KEY
-
-                        aws ecr describe-repositories --repository-names ${ECR_REPO_NAME} --region us-east-1 || \
-                        aws ecr create-repository --repository-name ${ECR_REPO_NAME} --region us-east-1
-                    '''
-                }
-            }
+         ]) {
+                sh '''
+                    export AWS_ACCESS_KEY_ID=$AWS_ACCESS_KEY
+                    export AWS_SECRET_ACCESS_KEY=$AWS_SECRET_KEY
+                    aws ecr describe-repositories --repository-names ${ECR_REPO_NAME} --region us-east-1 || \
+                    aws ecr create-repository --repository-name ${ECR_REPO_NAME} --region us-east-1
+                '''
+           }
         }
+    }
 
         stage('11. Login & Tag Image') {
             steps {
                 withCredentials([
                     string(credentialsId: 'access-key', variable: 'AWS_ACCESS_KEY'),
                     string(credentialsId: 'secret-key', variable: 'AWS_SECRET_KEY')
-                ]) {
-                sh """
-					#!/bin/bash
-                        set -e
-                        aws ecr get-login-password --region us-east-1 | \
-                        docker login --username AWS --password-stdin ${params.AWS_ACCOUNT_ID}.dkr.ecr.us-east-1.amazonaws.com
-                        docker tag django-project:latest ${params.AWS_ACCOUNT_ID}.dkr.ecr.us-east-1.amazonaws.com/django-project:lates
-                """
+        ]) {
+                sh '''
+                    set -e
+                        ECR_URI="${AWS_ACCOUNT_ID}.dkr.ecr.us-east-1.amazonaws.com/${ECR_REPO_NAME}"
 
-                }
-            }
+                        # Login to ECR
+                        aws ecr get-login-password --region us-east-1 | docker login --username AWS --password-stdin "$ECR_URI"
+
+                        # Tag images
+                        docker tag ${ECR_REPO_NAME}:latest "$ECR_URI:latest"
+                        docker tag ${ECR_REPO_NAME}:latest "$ECR_URI:${BUILD_NUMBER}"
+                '''
+           }
         }
+    }
 
         stage('12. Push Image') {
             steps {
                 sh '''
-				    #!/bin/bash
-                        set -e
-                        docker push ${params.AWS_ACCOUNT_ID}.dkr.ecr.us-east-1.amazonaws.com/${params.ECR_REPO_NAME}:${BUILD_NUMBER}
-                        docker push ${params.AWS_ACCOUNT_ID}.dkr.ecr.us-east-1.amazonaws.com/${params.ECR_REPO_NAME}:latest
-                '''
-                }
-            }
-
-
-        stage('13. Cleanup') {
-            steps {
-                sh '''
-                    docker rmi ${params.AWS_ACCOUNT_ID}.dkr.ecr.us-east-1.amazonaws.com/${params.ECR_REPO_NAME}:${BUILD_NUMBER} || true
-                    docker rmi ${params.AWS_ACCOUNT_ID}.dkr.ecr.us-east-1.amazonaws.com/${params.ECR_REPO_NAME}:latest || true
-                    docker rmi ${params.ECR_REPO_NAME} || true
-                    docker image prune -f
+                    set -e
+                        ECR_URI="${AWS_ACCOUNT_ID}.dkr.ecr.us-east-1.amazonaws.com/${ECR_REPO_NAME}"
+                        docker push "$ECR_URI:latest"
+                        docker push "$ECR_URI:${BUILD_NUMBER}"
                 '''
             }
         }
 
-    }
-}
+        stage('13. Cleanup') {
+            steps {
+                sh '''
+                    set -e
+                        ECR_URI="${AWS_ACCOUNT_ID}.dkr.ecr.us-east-1.amazonaws.com/${ECR_REPO_NAME}"
+                        docker rmi "$ECR_URI:latest" || true
+                        docker rmi "$ECR_URI:${BUILD_NUMBER}" || true
+                        docker rmi ${ECR_REPO_NAME} || true
+                        docker image prune -f
+                '''
+            }
+        }
