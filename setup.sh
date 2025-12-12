@@ -32,7 +32,7 @@ echo "   =================================="
 echo "** Your Build server is ready for use **"
 echo "   =================================="
 
-# install aw-cli 
+# install aws-cli 
 sudo apt update
 sudo apt install -y unzip
 curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
